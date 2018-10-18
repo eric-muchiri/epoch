@@ -15,11 +15,11 @@
 
 -define(DEFAULT_WEBSOCKET_INTERNAL_PORT, 8144).
 -define(DEFAULT_WEBSOCKET_LISTEN_ADDRESS, <<"127.0.0.1">>).
--define(INT_ACCEPTORS_POOLSIZE, 10).
+-define(INT_ACCEPTORS_POOLSIZE, 100).
 
 -define(DEFAULT_CHANNEL_WEBSOCKET_PORT, 8044).
 -define(DEFAULT_CHANNEL_WEBSOCKET_LISTEN_ADDRESS, <<"127.0.0.1">>).
--define(CHANNEL_ACCEPTORS_POOLSIZE, 10).
+-define(CHANNEL_ACCEPTORS_POOLSIZE, 100).
 
 %% Application callbacks
 -export([start/2, stop/1]).
@@ -95,55 +95,61 @@ start_http_api() ->
 
 start_http_api(Target, LogicHandler) ->
     PoolSize = get_http_api_acceptors(Target),
+    MaxConns = get_http_api_max_conns(Target),
     Port = get_http_api_port(Target),
     ListenAddress = get_http_api_listen_address(Target),
 
     Paths = aehttp_api_router:get_paths(Target, LogicHandler),
     Dispatch = cowboy_router:compile([{'_', Paths}]),
 
-    {ok, _} = cowboy:start_clear(Target,
-            [{port, Port},
-             {ip, ListenAddress},
-             {num_acceptors, PoolSize}],
-            #{env => #{dispatch => Dispatch},
-              middlewares => [cowboy_router,
-                              aehttp_cors_middleware,
-                              cowboy_handler]}
-        ),
+    Opts = [{port, Port},
+            {ip, ListenAddress},
+            {max_connections, MaxConns},
+            {num_acceptors, PoolSize}],
+    Env = #{env => #{dispatch => Dispatch},
+            middlewares => [cowboy_router,
+                            aehttp_cors_middleware,
+                            cowboy_handler]},
+    lager:debug("Target = ~p, Opts = ~p", [Target, Opts]),
+    {ok, _} = cowboy:start_clear(Target, Opts, Env),
     ok.
 
 start_websocket_internal() ->
     Port = get_internal_websockets_port(),
-    PoolSize = get_internal_websockets_acceptors(),
+    Acceptors = get_internal_websockets_acceptors(),
+    MaxConns = get_internal_websockets_max_conns(),
     ListenAddress = get_internal_websockets_listen_address(),
     Dispatch = cowboy_router:compile([
         {'_', [
             {"/websocket", ws_handler, []}
         ]}
     ]),
-    {ok, _} = cowboy:start_clear(http,
-            [{port, Port},
-             {ip, ListenAddress},
-             {num_acceptors, PoolSize}],
-            #{env => #{dispatch => Dispatch}}
-        ),
+    Opts = [{port, Port},
+            {ip, ListenAddress},
+            {max_connections, MaxConns},
+            {num_acceptors, Acceptors}],
+    Env = #{env => #{dispatch => Dispatch}},
+    lager:debug("Opts = ~p", [Opts]),
+    {ok, _} = cowboy:start_clear(http, Opts, Env),
     ok.
 
 start_channel_websocket() ->
     Port = get_channel_websockets_port(),
-    PoolSize = get_channel_websockets_acceptors(),
+    Acceptors = get_channel_websockets_acceptors(),
+    MaxConns = get_channel_websockets_max_conns(),
     ListenAddress = get_channel_websockets_listen_address(),
     Dispatch = cowboy_router:compile([
         {'_', [
             {"/channel", sc_ws_handler, []}
         ]}
     ]),
-    {ok, _} = cowboy:start_clear(channels_socket,
-            [{port, Port},
-             {ip, ListenAddress},
-             {num_acceptors, PoolSize}],
-            #{env => #{dispatch => Dispatch}}
-        ),
+    Opts = [{port, Port},
+            {ip, ListenAddress},
+            {max_connections, MaxConns},
+            {num_acceptors, Acceptors}],
+    Env = #{env => #{dispatch => Dispatch}},
+    lager:debug("Opts = ~p", [Opts]),
+    {ok, _} = cowboy:start_clear(channels_socket, Opts, Env),
     ok.
 
 get_and_parse_ip_address_from_config_or_env(CfgKey, App, EnvKey, Default) ->
@@ -153,9 +159,16 @@ get_and_parse_ip_address_from_config_or_env(CfgKey, App, EnvKey, Default) ->
 
 get_http_api_acceptors(external) ->
     aeu_env:user_config_or_env([<<"http">>, <<"external">>, <<"acceptors">>],
-                               aehttp, [external, acceptors], ?INT_ACCEPTORS_POOLSIZE);
+                               aehttp, [external, acceptors], ?INT_ACCEPTORS_POOLSIZE div 10);
 get_http_api_acceptors(internal) ->
     aeu_env:user_config_or_env([<<"http">>, <<"internal">>, <<"acceptors">>],
+                               aehttp, [internal, acceptors], ?INT_ACCEPTORS_POOLSIZE div 10).
+
+get_http_api_max_conns(external) ->
+    aeu_env:user_config_or_env([<<"http">>, <<"external">>, <<"max_connections">>],
+                               aehttp, [external, acceptors], ?INT_ACCEPTORS_POOLSIZE);
+get_http_api_max_conns(internal) ->
+    aeu_env:user_config_or_env([<<"http">>, <<"internal">>, <<"max_connections">>],
                                aehttp, [internal, acceptors], ?INT_ACCEPTORS_POOLSIZE).
 
 get_http_api_port(external) ->
@@ -183,6 +196,10 @@ get_internal_websockets_port() ->
 
 get_internal_websockets_acceptors() ->
     aeu_env:user_config_or_env([<<"websocket">>, <<"internal">>, <<"acceptors">>],
+                               aehttp, [internal, websocket, handlers], ?INT_ACCEPTORS_POOLSIZE div 10).
+
+get_internal_websockets_max_conns() ->
+    aeu_env:user_config_or_env([<<"websocket">>, <<"internal">>, <<"max_connections">>],
                                aehttp, [internal, websocket, handlers], ?INT_ACCEPTORS_POOLSIZE).
 
 ws_handlers_queue_max_size() -> 5.
@@ -198,5 +215,9 @@ get_channel_websockets_port() ->
 
 get_channel_websockets_acceptors() ->
     aeu_env:user_config_or_env([<<"websocket">>, <<"channel">>, <<"acceptors">>],
+                               aehttp, [channel, websocket, handlers], ?CHANNEL_ACCEPTORS_POOLSIZE div 10).
+
+get_channel_websockets_max_conns() ->
+    aeu_env:user_config_or_env([<<"websocket">>, <<"channel">>, <<"max_connections">>],
                                aehttp, [channel, websocket, handlers], ?CHANNEL_ACCEPTORS_POOLSIZE).
 
